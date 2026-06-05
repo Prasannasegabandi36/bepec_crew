@@ -2,34 +2,33 @@ import os
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process, LLM
 
-# Load environment variables from .env file locally
+# Load .env file locally
 load_dotenv()
 
-# Gemini LLM setup
-llm = LLM(
-    model="gemini/gemini-2.5-flash",
-    api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=0.7
-)
 
-
-def run_seo_crew(topic: str):
+def create_llm(model_name: str):
     """
-    Runs a CrewAI multi-agent workflow to generate an SEO-optimized blog post.
-    Input: topic entered by user from Streamlit frontend
-    Output: final polished blog post
+    Create Gemini LLM using CrewAI LLM class.
     """
+    return LLM(
+        model=model_name,
+        api_key=os.getenv("GEMINI_API_KEY"),
+        temperature=0.7
+    )
 
-    if not topic or topic.strip() == "":
-        return "Please enter a valid blog topic."
+
+def build_crew(topic: str, llm):
+    """
+    Build CrewAI agents, tasks, and crew.
+    """
 
     # Agent 1: SEO Strategist
     seo_strategist = Agent(
         role="Senior SEO Strategist",
-        goal="Find high-potential SEO keywords and create a clear blog outline for the given topic.",
+        goal="Find SEO keywords, understand search intent, and create a strong blog outline.",
         backstory=(
-            "You are an experienced SEO strategist who knows how to research keywords, "
-            "understand search intent, and structure blog content for better ranking."
+            "You are an experienced SEO strategist. You know how to research keywords, "
+            "understand user search intent, and create blog outlines that can rank well."
         ),
         llm=llm,
         verbose=True,
@@ -39,10 +38,10 @@ def run_seo_crew(topic: str):
     # Agent 2: Content Writer
     content_writer = Agent(
         role="Tech Content Writer",
-        goal="Write a clear, helpful, and engaging blog post using the SEO outline and keywords.",
+        goal="Write a clear, engaging, beginner-friendly blog post based on the SEO outline.",
         backstory=(
-            "You are a professional technical content writer who explains complex topics "
-            "in simple language with examples and proper Markdown formatting."
+            "You are a professional technical content writer. You explain technical topics "
+            "in simple language using examples, headings, and Markdown formatting."
         ),
         llm=llm,
         verbose=True,
@@ -52,25 +51,25 @@ def run_seo_crew(topic: str):
     # Agent 3: Chief Editor
     editor = Agent(
         role="Chief Editor",
-        goal="Improve the blog post for clarity, grammar, readability, structure, and SEO quality.",
+        goal="Polish the blog post for grammar, readability, structure, and SEO quality.",
         backstory=(
-            "You are a senior editor who reviews content before publishing. "
-            "You improve flow, fix mistakes, and make the final article polished and professional."
+            "You are a senior editor. You improve the final article before publishing by "
+            "fixing grammar, improving flow, and making the content professional."
         ),
         llm=llm,
         verbose=True,
         allow_delegation=False
     )
 
-    # Task 1: SEO planning
+    # Task 1: SEO Planning
     planning_task = Task(
         description=f"""
         Analyze the blog topic: "{topic}"
 
         Your task:
         1. Identify the target audience.
-        2. Find 5 important SEO keywords related to this topic.
-        3. Understand the search intent.
+        2. Find 5 important SEO keywords.
+        3. Explain the search intent.
         4. Create a complete blog outline using:
            - H1 heading
            - H2 headings
@@ -90,7 +89,7 @@ def run_seo_crew(topic: str):
         agent=seo_strategist
     )
 
-    # Task 2: Blog writing
+    # Task 2: Blog Writing
     writing_task = Task(
         description=f"""
         Write a complete blog post on the topic: "{topic}"
@@ -120,7 +119,7 @@ def run_seo_crew(topic: str):
         context=[planning_task]
     )
 
-    # Task 3: Final editing
+    # Task 3: Final Editing
     editing_task = Task(
         description=f"""
         Review and improve the blog post on: "{topic}"
@@ -133,7 +132,8 @@ def run_seo_crew(topic: str):
         5. Improve headings if needed.
         6. Output only the final polished blog post.
 
-        Do not include internal comments. Give only the final blog article.
+        Do not include internal comments.
+        Give only the final blog article.
         """,
         expected_output="""
         A final polished SEO-optimized Markdown blog post ready for publishing.
@@ -150,13 +150,54 @@ def run_seo_crew(topic: str):
         verbose=True
     )
 
-    try:
-        result = seo_blog_crew.kickoff(
-            inputs={
-                "topic": topic
-            }
-        )
-        return str(result)
+    return seo_blog_crew
 
-    except Exception as e:
-        return f"Error while running CrewAI workflow: {str(e)}"
+
+def run_seo_crew(topic: str):
+    """
+    Main function called from Streamlit frontend.
+    It runs the CrewAI workflow using Gemini.
+    """
+
+    if not topic or topic.strip() == "":
+        return "Please enter a valid blog topic."
+
+    if not os.getenv("GEMINI_API_KEY"):
+        return "GEMINI_API_KEY is missing. Please add it in Streamlit Secrets."
+
+    # Use lighter model first to avoid high-demand 503 error
+    models_to_try = [
+        "gemini/gemini-2.5-flash-lite",
+        "gemini/gemini-1.5-flash"
+    ]
+
+    last_error = None
+
+    for model_name in models_to_try:
+        try:
+            llm = create_llm(model_name)
+            crew = build_crew(topic, llm)
+
+            result = crew.kickoff(
+                inputs={
+                    "topic": topic
+                }
+            )
+
+            return str(result)
+
+        except Exception as e:
+            last_error = str(e)
+
+            # If Gemini is busy, try next model
+            if "503" in last_error or "UNAVAILABLE" in last_error or "high demand" in last_error:
+                continue
+
+            # For other errors, stop immediately
+            return f"Error while running CrewAI workflow: {last_error}"
+
+    return (
+        "Gemini is currently busy or unavailable. "
+        "Please try again after some time.\n\n"
+        f"Last error: {last_error}"
+    )
